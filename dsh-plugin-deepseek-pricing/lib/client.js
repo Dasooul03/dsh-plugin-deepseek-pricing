@@ -1,4 +1,4 @@
-// dsh-plugin-deepseek-pricing-ui — 浏览器半边（client bundle）
+// dsh-plugin-deepseek-pricing — 浏览器半边（client bundle）
 //
 // 由 dsh 的 ClientModuleRegistry 以 /plugins/dsh-plugin-deepseek-pricing-ui/client.js
 // 提供给 web 前端；页面加载后通过 window.__ModuleLoader__ 注册工厂，客户端 loader
@@ -8,7 +8,7 @@
 // 数据来源：同源路由 GET /api/deepseek-pricing/snapshot（host 半边注册）。
 
 window.__ModuleLoader__.load({
-  id: "dsh-plugin-deepseek-pricing-ui",
+  id: "dsh-plugin-deepseek-pricing",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;

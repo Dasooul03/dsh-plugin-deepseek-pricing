@@ -68,3 +68,36 @@ export function estimateCost(
 export function parsePricingHtml(html: string): PricingDocument;
 export function fetchPricingHtml(url: string, timeoutMs: number): Promise<string>;
 export function apply(ctx: { tools: { register(definition: unknown): unknown } }, config?: PluginConfig): void;
+
+// ---- Web 界面（lib/ui.js）----
+export const ROUTE_PATH: string;
+export const COSTS_ROUTE_PATH: string;
+export function buildSnapshot(
+  pricing: PricingDocument,
+  at: Date,
+  cnyRate: number,
+  extraNotes?: string[]
+): Record<string, unknown>;
+export function computeSessionCosts(
+  pricing: PricingDocument,
+  events: ReadonlyArray<Record<string, unknown>>,
+  cnyRate?: number
+): {
+  turns: Array<{
+    turn: number;
+    startedAt: string | null;
+    model: string | null;
+    tokens: { input: number; cacheRead: number; output: number };
+    costUsd: number;
+    costCny: number;
+    tier: string | null;
+    steps: number;
+  }>;
+  tokens: { input: number; cacheRead: number; output: number; costUsd: number };
+  totalUsd: number;
+  totalCny: number;
+  currentTurn: number | null;
+  currentTurnUsd: number;
+  currentTurnCny: number;
+  note: string;
+};

@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+import * as pricingModule from "../lib/index.js";
 import {
   Config,
   DEFAULT_PRICING,
@@ -20,6 +21,7 @@ import {
 } from "../lib/index.js";
 
 let passed = 0;
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
 function ok(name, fn) {
   fn();
   passed++;
@@ -133,7 +135,7 @@ ok("空页面解析报错", () => {
 // ---- apply() 在最小 ctx 上注册两个工具 ----------------------------------
 ok("峰谷周期下 deepseek_pricing 工具执行（offPeak 键回归）", async () => {
   const registered = [];
-  apply({ tools: { register: (d) => registered.push(d) } }, { liveSync: false });
+  apply({ tools: { register: (d) => registered.push(d) }, inject: () => {} }, { liveSync: false });
   const tool = registered.find((d) => d.name === "deepseek_pricing");
   const r = await tool.execute({ at: "2026-08-17T12:00:00Z" }, {});
   assert.equal(r.status, "off-peak");
@@ -151,6 +153,7 @@ ok("峰谷周期下 deepseek_pricing 工具执行（offPeak 键回归）", async
 ok("apply 注册 deepseek_pricing 与 estimate_cost", () => {  const registered = [];
   const fakeCtx = {
     tools: { register: (def) => registered.push(def) },
+    inject: () => {},
   };
   apply(fakeCtx, {});
   assert.deepEqual(registered.map((d) => d.name).sort(), ["deepseek_pricing", "estimate_cost"]);
@@ -163,3 +166,225 @@ ok("apply 注册 deepseek_pricing 与 estimate_cost", () => {  const registered 
 });
 
 console.log(`\n全部 ${passed} 项冒烟测试通过 ✅`);
+
+// ---- Web 界面（host 路由 + client bundle）----
+// P 即合并后插件模块本身
+const P = pricingModule;
+
+// ---- 会话费用计算 ---------------------------------------------------------
+ok("computeSessionCosts 按时间戳逐轮计价", () => {
+  const { DEFAULT_PRICING } = P;
+  // 合成事件：峰谷生效后 高峰时刻 与 谷时时刻 各一条消息（验证按时间取价）
+  const events = [
+    { type: "turn/start", time: 1786696174303, data: { turn: 1 } },
+    { type: "assistant/message", time: new Date("2026-08-17T02:00:00Z").getTime(), data: {
+        turn: 1, step: 1,
+        usage: { inputTokens: 1000, cacheReadTokens: 500, outputTokens: 200 },
+        message: { source: { model: "deepseek-v4-flash" } },
+    } },
+    { type: "turn/end", time: 1786696186127, data: { turn: 1 } },
+    { type: "turn/start", time: 1786696186128, data: { turn: 2 } },
+    { type: "assistant/message", time: new Date("2026-08-17T12:00:00Z").getTime(), data: {
+        turn: 2, step: 1,
+        usage: { inputTokens: 1000, cacheReadTokens: 0, outputTokens: 100 },
+        message: { source: { model: "deepseek-v4-flash" } },
+    } },
+  ];
+  const r = P.computeSessionCosts(DEFAULT_PRICING, events, 7.2);
+  assert.equal(r.turns.length, 2);
+  // 轮 1 高峰价：500 命中×0.014/M + 1000 未命中×0.44/M + 200 输出×1.32/M
+  const t1 = r.turns[0];
+  const expect1 = (500 / 1e6) * 0.014 + (1000 / 1e6) * 0.44 + (200 / 1e6) * 1.32;
+  assert.ok(Math.abs(t1.costUsd - expect1) < 1e-12, `t1=${t1.costUsd} expect=${expect1}`);
+  assert.equal(t1.tier, "peak");
+  assert.equal(t1.model, "deepseek-v4-flash");
+  // 轮 2 谷时价：1000 未命中×0.22/M + 100 输出×0.66/M
+  const t2 = r.turns[1];
+  const expect2 = (1000 / 1e6) * 0.22 + (100 / 1e6) * 0.66;
+  assert.ok(Math.abs(t2.costUsd - expect2) < 1e-12);
+  assert.equal(t2.tier, "off-peak");
+  assert.ok(Math.abs(r.totalUsd - (expect1 + expect2)) < 1e-12);
+  assert.equal(r.currentTurn, 2);
+  assert.ok(Math.abs(r.currentTurnUsd - expect2) < 1e-12);
+  assert.ok(Math.abs(r.totalCny - r.totalUsd * 7.2) < 1e-9);
+  assert.ok(t1.startedAt.startsWith("2026-"), "startedAt 应带时间戳");
+});
+
+ok("computeSessionCosts 未知模型回退并注明", () => {
+  const { DEFAULT_PRICING } = P;
+  const events = [
+    { type: "turn/start", time: 1, data: { turn: 1 } },
+    { type: "assistant/message", time: 2, data: {
+        turn: 1, step: 1,
+        usage: { inputTokens: 1000, cacheReadTokens: 0, outputTokens: 0 },
+        message: { source: { model: "some-unknown-model" } },
+    } },
+  ];
+  const r = P.computeSessionCosts(DEFAULT_PRICING, events, 7.2);
+  assert.ok(r.totalUsd > 0, "应按回退模型计价");
+  assert.ok(r.note.includes("some-unknown-model"));
+});
+
+ok("computeSessionCosts 空事件安全", () => {
+  const { DEFAULT_PRICING } = P;
+  const r = P.computeSessionCosts(DEFAULT_PRICING, [], 7.2);
+  assert.equal(r.turns.length, 0);
+  assert.equal(r.totalUsd, 0);
+  assert.equal(r.currentTurn, null);
+});
+
+// ---- session-costs 路由 ---------------------------------------------------
+ok("session-costs 路由：活动会话优先、持久化兜底", async () => {
+  let routes = [];
+  const fakeWebServer = { register: (route) => { routes.push(route); return () => {}; } };
+  const liveEvents = [
+    { type: "turn/start", time: 1, data: { turn: 1 } },
+    { type: "assistant/message", time: 2, data: {
+        turn: 1, step: 1,
+        usage: { inputTokens: 1000, cacheReadTokens: 0, outputTokens: 0 },
+        message: { source: { model: "deepseek-v4-flash" } },
+    } },
+  ];
+  const fakeCtx = {
+    tools: { register: () => {} },
+    inject: (services, cb) => {
+      assert.deepEqual(services, ["webServer", "sessions", "sessionPersistence"]);
+      cb({
+        webServer: fakeWebServer,
+        sessions: {
+          get: (id) => (id === "live-session" ? { events: liveEvents } : void 0),
+        },
+        sessionPersistence: {
+          readFrom: async (id) =>
+            id === "stored-session"
+              ? { meta: { id }, events: liveEvents }
+              : (() => { const e = new Error(`session "${id}" not found`); throw e; })(),
+        },
+        effect: (fn) => fn(),
+      });
+    },
+  };
+  P.apply(fakeCtx, {});
+  const costsRoute = routes.find((r) => r.path === P.COSTS_ROUTE_PATH);
+  assert.ok(costsRoute, "应注册 session-costs 路由");
+  const call = async (url) => {
+    let payload = null;
+    const res = {
+      writeHead: (code, headers) => {
+        assert.equal(code, 200);
+        assert.ok(headers["content-type"].includes("application/json"));
+      },
+      end: (body) => { payload = body; },
+    };
+    await costsRoute.handler({ url }, res);
+    return JSON.parse(payload);
+  };
+  const live = await call("/api/deepseek-pricing/session-costs?session=live-session");
+  assert.equal(live.sessionId, "live-session");
+  assert.equal(live.turns.length, 1);
+  assert.ok(live.totalUsd > 0);
+  const stored = await call("/api/deepseek-pricing/session-costs?session=stored-session");
+  assert.equal(stored.turns.length, 1);
+  // 未知会话 → 500
+  let payload = null;
+  const res500 = {
+    writeHead: (code, headers) => { assert.equal(code, 500); void headers; },
+    end: (body) => { payload = body; },
+  };
+  await costsRoute.handler({ url: "/api/deepseek-pricing/session-costs?session=ghost" }, res500);
+  const ghost = JSON.parse(payload);
+  assert.ok(ghost.error.includes("not found"));
+});
+
+// ---- client 半边（__ModuleLoader__ 工厂） --------------------------------
+ok("client bundle 工厂注册并导出 apply/inject", () => {
+  const source = readFileSync(join(root, "lib/client.js"), "utf8");
+  let handoff = null;
+  globalThis.window = {
+    __ModuleLoader__: {
+      load: (h) => {
+        handoff = h;
+      },
+    },
+  };
+  globalThis.document = {
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    createElement: () => ({ dataset: {}, appendChild() {}, setAttribute() {} }),
+    head: { appendChild() {} },
+  };
+  // 在沙箱里执行 bundle（避免污染全局 require）
+  const fn = new Function(
+    "window",
+    "document",
+    `
+      const __require = (id) => {
+        if (id === "react") return { useState: () => [undefined, () => {}], useEffect: () => {}, useCallback: (f) => f, useMemo: (f) => f(), createElement: () => ({}) };
+        if (id === "react/jsx-runtime") return { jsx: () => ({}), jsxs: () => ({}) };
+        throw new Error("unexpected require: " + id);
+      };
+      ${source}
+    `
+  );
+  fn(globalThis.window, globalThis.document);
+  assert.ok(handoff, "bundle 应调用 __ModuleLoader__.load");
+  assert.equal(handoff.id, "dsh-plugin-deepseek-pricing");
+  const mod = handoff.factory((id) => {
+    if (id === "react") {
+      return {
+        createElement: () => ({}),
+        Fragment: Symbol("fragment"),
+        useState: (v) => [v, () => {}],
+        useEffect: () => {},
+        useCallback: (f) => f,
+        useMemo: (f) => f(),
+      };
+    }
+    if (id === "react/jsx-runtime") return { jsx: () => ({}), jsxs: () => ({}) };
+    throw new Error("unexpected require: " + id);
+  });
+  assert.equal(typeof mod.apply, "function");
+  assert.deepEqual(mod.inject, ["slots", "locale", "sessions"]);
+  assert.equal(mod.NS, "deepseekPricingPanel");
+  // apply 注册侧边栏入口
+  let injected = null;
+  let registeredSpec = null;
+  const locale = {
+    register: () => {},
+    bind: () => (key) => key,
+  };
+  const slots = {
+    inject: (name, factory) => {
+      injected = { name, factory };
+    },
+    register: (spec, comp) => {
+      registeredSpec = spec;
+      assert.equal(spec.name, "sidebar.footer.action");
+      assert.equal(spec.id, "deepseek-pricing-panel");
+      assert.equal(typeof comp, "function");
+      return () => {};
+    },
+  };
+  const sessionsService = {
+    list: {
+      getSnapshot: () => ({ current: "session-abc" }),
+      subscribe: (fn) => () => {},
+    },
+  };
+  mod.apply({ effect: (fn) => fn(), locale, slots, sessions: sessionsService });
+  assert.ok(injected);
+  assert.equal(injected.name, "sidebar.footer.action");
+  // 触发注入工厂，完成 slots.register
+  injected.factory();
+  assert.ok(registeredSpec, "slots.register 应被调用");
+  // 注入的会话辅助函数
+  assert.equal(typeof registeredSpec.inject, "function");
+  const props = registeredSpec.inject();
+  assert.equal(typeof props.getSessionId, "function");
+  assert.equal(props.getSessionId(), "session-abc");
+  assert.equal(typeof props.subscribeSessions, "function");
+  delete globalThis.window;
+  delete globalThis.document;
+});
+
+console.log(`\n全部 ${passed} 项 UI 包冒烟测试通过 ✅`);

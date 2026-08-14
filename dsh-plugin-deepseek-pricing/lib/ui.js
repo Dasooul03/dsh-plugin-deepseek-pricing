@@ -1,48 +1,35 @@
-// dsh-plugin-deepseek-pricing-ui — host 半边
+// dsh-plugin-deepseek-pricing — Web 界面 host 半边（lib/ui.js）
 //
-// 职责：向 web 应用注册一个同源只读 JSON 快照路由
-//   GET /api/deepseek-pricing/snapshot[?refresh=1]
-// 供浏览器端的定价面板（lib/client.js）拉取实时定价。
+// 职责：向 web 应用注册两个同源只读 JSON 路由，供浏览器端定价面板（lib/client.js）使用：
+//   GET /api/deepseek-pricing/snapshot[?refresh=1]          实时价格快照
+//   GET /api/deepseek-pricing/session-costs?session=<id>    会话逐轮费用
 //
-// 定价数据复用 dsh-plugin-deepseek-pricing 的抓取/解析/峰谷判定纯函数，
-// 与本包自身的小型 TTL 缓存，独立于工具插件的状态。
-//
-// 本包同时是一个 loader entry（name: dsh-plugin-deepseek-pricing-ui）：
-// 新条目名会被运行中的 web 实例全新加载，无需重启即可生效。
+// 定价状态（文档、TTL 缓存、ensureFresh）由 lib/index.js 的 createPricingState 统一持有，
+// 与 Agent 工具共享同一份数据与缓存。
 
 import {
-  DEFAULT_PRICING,
-  fetchPricingHtml,
+  formatBeijing,
   isPeakUtc,
   knownModels,
-  parsePricingHtml,
   pricesFor,
   resolvePeriodAt,
-} from "dsh-plugin-deepseek-pricing";
-
-export const name = "deepseek-pricing-ui";
+} from "./pricing.js";
 
 /** 快照路由路径（与 client.js 约定）。 */
 export const ROUTE_PATH = "/api/deepseek-pricing/snapshot";
 
-/** 默认同步缓存时长（30 分钟）。 */
-export const DEFAULT_CACHE_TTL_MS = 30 * 60 * 1000;
-const DEFAULT_SOURCE_URL = "https://api-docs.deepseek.com/quick_start/pricing";
-const DEFAULT_FETCH_TIMEOUT_MS = 8000;
-const DEFAULT_CNY_RATE = 7.2;
+/** 会话费用计算路由（与 client.js 约定）。 */
+export const COSTS_ROUTE_PATH = "/api/deepseek-pricing/session-costs";
 
-/** 北京时间显示格式（与工具插件的展示口径一致）。 */
-export function formatBeijing(d) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(d);
+/** 事件时间归一化：存库为毫秒数，内存对象也可能为字符串。 */
+function eventTimeMs(event) {
+  const t = event?.time;
+  if (typeof t === "number") return t;
+  if (typeof t === "string") {
+    const n = Date.parse(t);
+    return Number.isNaN(n) ? null : n;
+  }
+  return null;
 }
 
 /**
@@ -103,20 +90,6 @@ export function buildSnapshot(pricing, at, cnyRate, extraNotes = []) {
   };
 }
 
-/** 会话费用计算路由（与 client.js 约定）。 */
-export const COSTS_ROUTE_PATH = "/api/deepseek-pricing/session-costs";
-
-/** 事件时间归一化：存库为毫秒数，内存对象也可能为字符串。 */
-function eventTimeMs(event) {
-  const t = event?.time;
-  if (typeof t === "number") return t;
-  if (typeof t === "string") {
-    const n = Date.parse(t);
-    return Number.isNaN(n) ? null : n;
-  }
-  return null;
-}
-
 /**
  * 按会话事件日志逐轮计算费用（纯函数，便于测试）。
  *
@@ -130,7 +103,7 @@ function eventTimeMs(event) {
  * @param cnyRate USD→CNY 参考汇率
  * @returns { turns, tokens, totalUsd, totalCny, currentTurn, currentTurnUsd, currentTurnCny, note }
  */
-export function computeSessionCosts(pricing, events, cnyRate = DEFAULT_CNY_RATE) {
+export function computeSessionCosts(pricing, events, cnyRate = 7.2) {
   const turns = [];
   const total = { input: 0, cacheRead: 0, output: 0, costUsd: 0 };
   let current = null;
@@ -230,41 +203,14 @@ export function computeSessionCosts(pricing, events, cnyRate = DEFAULT_CNY_RATE)
   };
 }
 
-/** 插件主体：注册快照路由（webServer 动态注入，headless 下无副作用）。 */
-export function apply(ctx, config = {}) {
-  const liveSync = config.liveSync ?? true;
-  const sourceUrl = config.pricingSourceUrl ?? DEFAULT_SOURCE_URL;
-  const cacheTtlMs = config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
-  const fetchTimeoutMs = config.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
-  const cnyRate = config.cnyRate ?? DEFAULT_CNY_RATE;
-
-  let pricing = DEFAULT_PRICING;
-  let lastFetch = 0;
-  let inFlight = null;
-
-  /** 返回当前定价文档；liveSync 开启且缓存过期时先尝试同步（失败回退旧值）。 */
-  async function ensureFresh(force) {
-    if (!liveSync) return pricing;
-    const now = Date.now();
-    const stale = force || lastFetch === 0 || now - lastFetch > cacheTtlMs;
-    if (!stale) return pricing;
-    if (!inFlight) {
-      inFlight = (async () => {
-        try {
-          const html = await fetchPricingHtml(sourceUrl, fetchTimeoutMs);
-          pricing = parsePricingHtml(html);
-        } catch {
-          /* 保留上次成功数据 */
-        } finally {
-          lastFetch = Date.now();
-          inFlight = null;
-        }
-      })();
-    }
-    await inFlight;
-    return pricing;
-  }
-
+/**
+ * 注册 Web 路由（webServer 动态注入；headless 等无 webServer 的环境无副作用）。
+ * 定价状态（pricing 文档 + ensureFresh 缓存）与 Agent 工具共享。
+ * @param ctx 插件上下文
+ * @param state createPricingState 返回的状态（pricing / ensureFresh / fetchFailedNote）
+ * @param cfg 归一化配置（cnyRate 等）
+ */
+export function registerUiRoutes(ctx, state, cfg) {
   ctx.inject(["webServer", "sessions", "sessionPersistence"], (webCtx) => {
     const json = (res, code, body) => {
       res.writeHead(code, {
@@ -283,15 +229,15 @@ export function apply(ctx, config = {}) {
             try {
               const refresh =
                 new URL(req.url ?? "/", "http://x").searchParams.get("refresh") === "1";
-              const doc = await ensureFresh(refresh);
-              const snapshot = buildSnapshot(doc, new Date(), cnyRate);
+              const doc = await state.ensureFresh(refresh);
+              const snapshot = buildSnapshot(doc, new Date(), cfg.cnyRate, state.fetchFailedNote ? [state.fetchFailedNote] : []);
               json(res, 200, snapshot);
             } catch (error) {
               json(res, 500, { error: String((error && error.message) || error) });
             }
           },
         }),
-      "deepseek-pricing-ui: snapshot route"
+      "deepseek-pricing: snapshot route"
     );
 
     webCtx.effect(
@@ -319,10 +265,10 @@ export function apply(ctx, config = {}) {
                 }
               }
               if (events === null) throw new Error(`session ${JSON.stringify(sessionId)} not found`);
-              const doc = await ensureFresh(false);
+              const doc = await state.ensureFresh(false);
               const at = new Date();
               const period = resolvePeriodAt(doc, at);
-              const result = computeSessionCosts(doc, events, cnyRate);
+              const result = computeSessionCosts(doc, events, cfg.cnyRate);
               json(res, 200, {
                 sessionId,
                 computedAt: at.toISOString(),
@@ -332,7 +278,7 @@ export function apply(ctx, config = {}) {
                   status: period.mode === "flat" ? "flat" : isPeakUtc(at, doc.peakHoursUtc) ? "peak" : "off-peak",
                   periodLabel: period.label,
                 },
-                cnyRate,
+                cnyRate: cfg.cnyRate,
                 ...result,
               });
             } catch (error) {
@@ -340,7 +286,7 @@ export function apply(ctx, config = {}) {
             }
           },
         }),
-      "deepseek-pricing-ui: session costs route"
+      "deepseek-pricing: session costs route"
     );
   });
 }
