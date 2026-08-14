@@ -22,9 +22,9 @@ window.__ModuleLoader__.load({
     const inject = ["slots", "locale", "sessions"];
 
     const zh = {
-      label: "DeepSeek 定价",
-      open: "打开 DeepSeek 定价面板",
-      close: "关闭定价面板",
+      label: "价格监控",
+      open: "打开价格监控面板",
+      close: "关闭价格监控面板",
       refresh: "刷新",
       loading: "加载中…",
       error: "暂时无法获取定价",
@@ -68,9 +68,9 @@ window.__ModuleLoader__.load({
     };
 
     const en = {
-      label: "DeepSeek Pricing",
-      open: "Open DeepSeek pricing panel",
-      close: "Close pricing panel",
+      label: "DSH Price Monitor",
+      open: "Open DSH Price Monitor",
+      close: "Close DSH Price Monitor",
       refresh: "Refresh",
       loading: "Loading…",
       error: "Pricing unavailable",

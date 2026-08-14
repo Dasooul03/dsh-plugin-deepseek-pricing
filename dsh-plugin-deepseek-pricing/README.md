@@ -1,4 +1,6 @@
-# dsh-plugin-deepseek-pricing
+# DSH Price Monitor（价格监控）
+
+> 技术包名：`dsh-plugin-deepseek-pricing`
 
 DeepSeek 官方模型**实时定价查询**、**会话费用统计**与**费用预估**的 [DSH](https://github.com/deepseek-ai/deepseek-harness) 插件。单一插件包同时提供 Agent 工具与 Web 定价面板。
 
