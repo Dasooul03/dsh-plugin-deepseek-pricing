@@ -46,22 +46,24 @@ ok("buildSnapshot 峰谷周期给出双档价格", () => {
 });
 
 ok("apply 注册快照路由并返回 JSON", async () => {
-  let registered = null;
+  const routes = [];
   const fakeWebServer = {
     register: (route) => {
-      registered = route;
+      routes.push(route);
       return () => {};
     },
   };
   const fakeCtx = {
     inject: (services, cb) => {
-      assert.deepEqual(services, ["webServer"]);
+      assert.deepEqual(services, ["webServer", "sessions", "sessionPersistence"]);
       cb({ webServer: fakeWebServer, effect: (fn) => fn() });
     },
   };
   host.apply(fakeCtx, {});
+  assert.equal(routes.length, 2, "应注册 snapshot 与 session-costs 两条路由");
+  const registered = routes.find((r) => r.path === host.ROUTE_PATH);
+  assert.ok(registered, "snapshot 路由应存在");
   assert.equal(registered.kind, "exact");
-  assert.equal(registered.path, host.ROUTE_PATH);
   // 调用 handler（模拟请求）
   const body = await new Promise((resolve, reject) => {
     const chunks = [];
@@ -87,13 +89,137 @@ ok("无 webServer 时 apply 无副作用", () => {
     {
       inject: (services, cb) => {
         // 服务未就绪：回调永不执行，apply 不抛错
-        assert.deepEqual(services, ["webServer"]);
+        assert.deepEqual(services, ["webServer", "sessions", "sessionPersistence"]);
         void cb;
       },
     },
     {}
   );
   assert.equal(cbCalled, false);
+});
+
+// ---- 会话费用计算 ---------------------------------------------------------
+ok("computeSessionCosts 按时间戳逐轮计价", () => {
+  const { DEFAULT_PRICING } = pricing;
+  // 合成事件：峰谷生效后 高峰时刻 与 谷时时刻 各一条消息（验证按时间取价）
+  const events = [
+    { type: "turn/start", time: 1786696174303, data: { turn: 1 } },
+    { type: "assistant/message", time: new Date("2026-08-17T02:00:00Z").getTime(), data: {
+        turn: 1, step: 1,
+        usage: { inputTokens: 1000, cacheReadTokens: 500, outputTokens: 200 },
+        message: { source: { model: "deepseek-v4-flash" } },
+    } },
+    { type: "turn/end", time: 1786696186127, data: { turn: 1 } },
+    { type: "turn/start", time: 1786696186128, data: { turn: 2 } },
+    { type: "assistant/message", time: new Date("2026-08-17T12:00:00Z").getTime(), data: {
+        turn: 2, step: 1,
+        usage: { inputTokens: 1000, cacheReadTokens: 0, outputTokens: 100 },
+        message: { source: { model: "deepseek-v4-flash" } },
+    } },
+  ];
+  const r = host.computeSessionCosts(DEFAULT_PRICING, events, 7.2);
+  assert.equal(r.turns.length, 2);
+  // 轮 1 高峰价：500 命中×0.014/M + 1000 未命中×0.44/M + 200 输出×1.32/M
+  const t1 = r.turns[0];
+  const expect1 = (500 / 1e6) * 0.014 + (1000 / 1e6) * 0.44 + (200 / 1e6) * 1.32;
+  assert.ok(Math.abs(t1.costUsd - expect1) < 1e-12, `t1=${t1.costUsd} expect=${expect1}`);
+  assert.equal(t1.tier, "peak");
+  assert.equal(t1.model, "deepseek-v4-flash");
+  // 轮 2 谷时价：1000 未命中×0.22/M + 100 输出×0.66/M
+  const t2 = r.turns[1];
+  const expect2 = (1000 / 1e6) * 0.22 + (100 / 1e6) * 0.66;
+  assert.ok(Math.abs(t2.costUsd - expect2) < 1e-12);
+  assert.equal(t2.tier, "off-peak");
+  assert.ok(Math.abs(r.totalUsd - (expect1 + expect2)) < 1e-12);
+  assert.equal(r.currentTurn, 2);
+  assert.ok(Math.abs(r.currentTurnUsd - expect2) < 1e-12);
+  assert.ok(Math.abs(r.totalCny - r.totalUsd * 7.2) < 1e-9);
+  assert.ok(t1.startedAt.startsWith("2026-"), "startedAt 应带时间戳");
+});
+
+ok("computeSessionCosts 未知模型回退并注明", () => {
+  const { DEFAULT_PRICING } = pricing;
+  const events = [
+    { type: "turn/start", time: 1, data: { turn: 1 } },
+    { type: "assistant/message", time: 2, data: {
+        turn: 1, step: 1,
+        usage: { inputTokens: 1000, cacheReadTokens: 0, outputTokens: 0 },
+        message: { source: { model: "some-unknown-model" } },
+    } },
+  ];
+  const r = host.computeSessionCosts(DEFAULT_PRICING, events, 7.2);
+  assert.ok(r.totalUsd > 0, "应按回退模型计价");
+  assert.ok(r.note.includes("some-unknown-model"));
+});
+
+ok("computeSessionCosts 空事件安全", () => {
+  const { DEFAULT_PRICING } = pricing;
+  const r = host.computeSessionCosts(DEFAULT_PRICING, [], 7.2);
+  assert.equal(r.turns.length, 0);
+  assert.equal(r.totalUsd, 0);
+  assert.equal(r.currentTurn, null);
+});
+
+// ---- session-costs 路由 ---------------------------------------------------
+ok("session-costs 路由：活动会话优先、持久化兜底", async () => {
+  let routes = [];
+  const fakeWebServer = { register: (route) => { routes.push(route); return () => {}; } };
+  const liveEvents = [
+    { type: "turn/start", time: 1, data: { turn: 1 } },
+    { type: "assistant/message", time: 2, data: {
+        turn: 1, step: 1,
+        usage: { inputTokens: 1000, cacheReadTokens: 0, outputTokens: 0 },
+        message: { source: { model: "deepseek-v4-flash" } },
+    } },
+  ];
+  const fakeCtx = {
+    inject: (services, cb) => {
+      assert.deepEqual(services, ["webServer", "sessions", "sessionPersistence"]);
+      cb({
+        webServer: fakeWebServer,
+        sessions: {
+          get: (id) => (id === "live-session" ? { events: liveEvents } : void 0),
+        },
+        sessionPersistence: {
+          readFrom: async (id) =>
+            id === "stored-session"
+              ? { meta: { id }, events: liveEvents }
+              : (() => { const e = new Error(`session "${id}" not found`); throw e; })(),
+        },
+        effect: (fn) => fn(),
+      });
+    },
+  };
+  host.apply(fakeCtx, {});
+  const costsRoute = routes.find((r) => r.path === host.COSTS_ROUTE_PATH);
+  assert.ok(costsRoute, "应注册 session-costs 路由");
+  const call = async (url) => {
+    let payload = null;
+    const res = {
+      writeHead: (code, headers) => {
+        assert.equal(code, 200);
+        assert.ok(headers["content-type"].includes("application/json"));
+      },
+      end: (body) => { payload = body; },
+    };
+    await costsRoute.handler({ url }, res);
+    return JSON.parse(payload);
+  };
+  const live = await call("/api/deepseek-pricing/session-costs?session=live-session");
+  assert.equal(live.sessionId, "live-session");
+  assert.equal(live.turns.length, 1);
+  assert.ok(live.totalUsd > 0);
+  const stored = await call("/api/deepseek-pricing/session-costs?session=stored-session");
+  assert.equal(stored.turns.length, 1);
+  // 未知会话 → 500
+  let payload = null;
+  const res500 = {
+    writeHead: (code, headers) => { assert.equal(code, 500); void headers; },
+    end: (body) => { payload = body; },
+  };
+  await costsRoute.handler({ url: "/api/deepseek-pricing/session-costs?session=ghost" }, res500);
+  const ghost = JSON.parse(payload);
+  assert.ok(ghost.error.includes("not found"));
 });
 
 // ---- client 半边（__ModuleLoader__ 工厂） --------------------------------
@@ -144,10 +270,11 @@ ok("client bundle 工厂注册并导出 apply/inject", () => {
     throw new Error("unexpected require: " + id);
   });
   assert.equal(typeof mod.apply, "function");
-  assert.deepEqual(mod.inject, ["slots", "locale"]);
+  assert.deepEqual(mod.inject, ["slots", "locale", "sessions"]);
   assert.equal(mod.NS, "deepseekPricingPanel");
   // apply 注册侧边栏入口
   let injected = null;
+  let registeredSpec = null;
   const locale = {
     register: () => {},
     bind: () => (key) => key,
@@ -157,15 +284,31 @@ ok("client bundle 工厂注册并导出 apply/inject", () => {
       injected = { name, factory };
     },
     register: (spec, comp) => {
+      registeredSpec = spec;
       assert.equal(spec.name, "sidebar.footer.action");
       assert.equal(spec.id, "deepseek-pricing-panel");
       assert.equal(typeof comp, "function");
       return () => {};
     },
   };
-  mod.apply({ effect: (fn) => fn(), locale, slots });
+  const sessionsService = {
+    list: {
+      getSnapshot: () => ({ current: "session-abc" }),
+      subscribe: (fn) => () => {},
+    },
+  };
+  mod.apply({ effect: (fn) => fn(), locale, slots, sessions: sessionsService });
   assert.ok(injected);
   assert.equal(injected.name, "sidebar.footer.action");
+  // 触发注入工厂，完成 slots.register
+  injected.factory();
+  assert.ok(registeredSpec, "slots.register 应被调用");
+  // 注入的会话辅助函数
+  assert.equal(typeof registeredSpec.inject, "function");
+  const props = registeredSpec.inject();
+  assert.equal(typeof props.getSessionId, "function");
+  assert.equal(props.getSessionId(), "session-abc");
+  assert.equal(typeof props.subscribeSessions, "function");
   delete globalThis.window;
   delete globalThis.document;
 });

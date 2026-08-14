@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
 
     const NS = "deepseekPricingPanel";
-    const inject = ["slots", "locale"];
+    const inject = ["slots", "locale", "sessions"];
 
     const zh = {
       label: "DeepSeek 定价",
@@ -56,6 +56,14 @@ window.__ModuleLoader__.load({
       custom: "自定义",
       live: "官方实时",
       bundled: "内置",
+      sessionCost: "会话费用",
+      turnCost: "本轮对话",
+      totalCost: "会话总花费",
+      noSession: "暂无会话",
+      turnsDetail: "费用明细（每轮按实际发生时刻计价）",
+      turnsCount: "共 {n} 轮",
+      turnRow: "轮 · {time} · {model}",
+      costLoading: "计算中…",
     };
 
     const en = {
@@ -93,6 +101,14 @@ window.__ModuleLoader__.load({
       custom: "Custom",
       live: "Live",
       bundled: "Bundled",
+      sessionCost: "Session cost",
+      turnCost: "This turn",
+      totalCost: "Session total",
+      noSession: "No session",
+      turnsDetail: "Per-turn detail (priced at each turn's actual time)",
+      turnsCount: "{n} turns",
+      turnRow: "turn · {time} · {model}",
+      costLoading: "Computing…",
     };
 
     // ---------------------------------------------------------------------
@@ -293,6 +309,47 @@ window.__ModuleLoader__.load({
       resultTotal: { color: "var(--dsw-alias-label-primary)", fontWeight: 600, fontSize: "13px" },
       error: { color: "var(--dsw-alias-state-error-primary)", fontSize: "12px", lineHeight: "18px", margin: "6px 0" },
       note: { color: "var(--dsw-alias-label-tertiary)", fontSize: "11px", lineHeight: "16px", marginTop: "8px" },
+      costSection: { marginTop: "12px", borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: "8px" },
+      costSummary: { display: "flex", gap: "8px" },
+      costCard: {
+        flex: "1",
+        border: "1px solid var(--dsw-alias-border-l2)",
+        background: "var(--dsw-alias-bg-layer-1)",
+        borderRadius: "10px",
+        padding: "8px 10px",
+        minWidth: 0,
+      },
+      costLabel: { color: "var(--dsw-alias-label-tertiary)", fontSize: "11px", lineHeight: "16px" },
+      costValue: {
+        color: "var(--dsw-alias-label-primary)",
+        fontSize: "15px",
+        fontWeight: 600,
+        lineHeight: "24px",
+        fontVariantNumeric: "tabular-nums",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      },
+      costCny: { color: "var(--dsw-alias-label-tertiary)", fontWeight: 400, fontSize: "12px", marginLeft: "4px" },
+      costEmpty: { color: "var(--dsw-alias-label-tertiary)", fontSize: "12px", lineHeight: "20px", margin: "6px 0" },
+      costError: { color: "var(--dsw-alias-state-error-primary)", fontSize: "12px", lineHeight: "18px", margin: "6px 0" },
+      turnsCount: { color: "var(--dsw-alias-label-tertiary)", fontWeight: 400, textTransform: "none", letterSpacing: 0 },
+      turnList: { display: "flex", flexDirection: "column", gap: "4px", margin: "2px 0 4px" },
+      turnRow: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "baseline",
+        gap: "8px",
+        border: "1px solid var(--dsw-alias-border-l2)",
+        background: "var(--dsw-alias-bg-layer-1)",
+        borderRadius: "8px",
+        padding: "5px 8px",
+        fontSize: "11px",
+        lineHeight: "16px",
+        minWidth: 0,
+      },
+      turnRowHead: { color: "var(--dsw-alias-label-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+      turnRowMeta: { flex: "none", color: "var(--dsw-alias-label-tertiary)", fontVariantNumeric: "tabular-nums" },
     };
 
     const TIER_COLORS = {
@@ -338,11 +395,19 @@ window.__ModuleLoader__.load({
 
     const usd = (n) => `$${n.toFixed(6)}`;
     const cny = (n) => `¥${n.toFixed(4)}`;
+    const fmtUsd = (n, digits = 6) => `$${Number(n).toFixed(digits)}`;
+    const shortTime = (iso) => {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return "—";
+      const p = (x) => String(x).padStart(2, "0");
+      return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    };
 
     // ---------------------------------------------------------------------
     // 面板组件
     // ---------------------------------------------------------------------
-    function PricingPanel({ wide, t }) {
+    function PricingPanel({ wide, t, getSessionId, subscribeSessions }) {
       const [open, setOpen] = useState(false);
       const [data, setData] = useState(null);
       const [error, setError] = useState(null);
@@ -351,6 +416,49 @@ window.__ModuleLoader__.load({
       const [inputRaw, setInputRaw] = useState("10000");
       const [hitRaw, setHitRaw] = useState("2000");
       const [outputRaw, setOutputRaw] = useState("2000");
+      const [sessionId, setSessionId] = useState(null);
+      const [costs, setCosts] = useState(null);
+      const [costError, setCostError] = useState(null);
+
+      const loadCosts = useCallback(async (sid) => {
+        if (!sid) {
+          setCosts(null);
+          return;
+        }
+        try {
+          const res = await fetch(
+            `/api/deepseek-pricing/session-costs?session=${encodeURIComponent(sid)}`,
+            { cache: "no-store" }
+          );
+          let body = null;
+          try {
+            body = await res.json();
+          } catch {
+            throw new Error(`HTTP ${res.status}`);
+          }
+          if (!res.ok || body.error) throw new Error(body.error || `HTTP ${res.status}`);
+          setCosts(body);
+          setCostError(null);
+        } catch (e) {
+          setCostError(String((e && e.message) || e));
+        }
+      }, []);
+
+      // 跟随当前会话（切换会话立即重新计算）
+      useEffect(() => {
+        setSessionId(typeof getSessionId === "function" ? getSessionId() : null);
+        if (typeof subscribeSessions !== "function") return undefined;
+        return subscribeSessions(() => {
+          setSessionId(typeof getSessionId === "function" ? getSessionId() : null);
+        });
+      }, [getSessionId, subscribeSessions]);
+
+      // 会话费用：每 10 秒自动刷新（每轮对话结束后约 10 秒内更新）
+      useEffect(() => {
+        loadCosts(sessionId);
+        const timer = setInterval(() => loadCosts(sessionId), 10000);
+        return () => clearInterval(timer);
+      }, [sessionId, loadCosts]);
 
       const load = useCallback(async (refresh) => {
         setBusy(true);
@@ -387,6 +495,84 @@ window.__ModuleLoader__.load({
         [data, model, inputRaw, hitRaw, outputRaw]
       );
 
+      // 会话费用区块：本轮 + 会话总花费 + 逐轮明细（每轮按实际发生时刻计价）
+      const renderCostSection = () => {
+        if (costError) {
+          return h("div", { style: STYLES.costError }, `${t("sessionCost")}: ${costError}`);
+        }
+        if (costs === null) {
+          return h(
+            "div",
+            { style: STYLES.costEmpty },
+            sessionId ? `${t("costLoading")}…` : t("noSession")
+          );
+        }
+        const turns = costs.turns ?? [];
+        const lastTurns = turns.slice(-10).reverse();
+        return h(
+          React.Fragment,
+          null,
+          h(
+            "div",
+            { style: STYLES.costSummary },
+            h(
+              "div",
+              { style: STYLES.costCard },
+              h("div", { style: STYLES.costLabel }, t("turnCost")),
+              h(
+                "div",
+                { style: STYLES.costValue },
+                fmtUsd(costs.currentTurnUsd, 6),
+                h("span", { style: STYLES.costCny }, `≈ ${cny(costs.currentTurnCny)}`)
+              )
+            ),
+            h(
+              "div",
+              { style: STYLES.costCard },
+              h("div", { style: STYLES.costLabel }, t("totalCost")),
+              h(
+                "div",
+                { style: STYLES.costValue },
+                fmtUsd(costs.totalUsd, 6),
+                h("span", { style: STYLES.costCny }, `≈ ${cny(costs.totalCny)}`)
+              )
+            )
+          ),
+          turns.length > 0
+            ? h(
+                React.Fragment,
+                null,
+                h(
+                  "div",
+                  { style: STYLES.groupLabel },
+                  t("turnsDetail"),
+                  h("span", { style: STYLES.turnsCount }, ` · ${t("turnsCount").replace("{n}", String(turns.length))}`)
+                ),
+                h(
+                  "div",
+                  { style: STYLES.turnList },
+                  lastTurns.map((turn) =>
+                    h(
+                      "div",
+                      { key: turn.turn, style: STYLES.turnRow },
+                      h(
+                        "span",
+                        { style: STYLES.turnRowHead },
+                        `#${turn.turn} · ${shortTime(turn.startedAt)} · ${turn.model ?? "—"}`
+                      ),
+                      h(
+                        "span",
+                        { style: STYLES.turnRowMeta },
+                        `${turn.tokens.input + turn.tokens.cacheRead}/${turn.tokens.output} tok · ${fmtUsd(turn.costUsd, 6)}`
+                      )
+                    )
+                  )
+                )
+              )
+            : null
+        );
+      };
+
       const colors = data ? TIER_COLORS[data.applicableTier] ?? TIER_COLORS.flat : TIER_COLORS.flat;
 
       const badge = h(
@@ -407,6 +593,13 @@ window.__ModuleLoader__.load({
                     "span",
                     { key: "s", style: { ...STYLES.badgeTier, background: colors.bg, color: colors.fg } },
                     tierLabel(t, data.applicableTier)
+                  )
+                : null,
+              costs
+                ? h(
+                    "span",
+                    { key: "c", style: { ...STYLES.badgeTier, background: "var(--dsw-alias-button-ghost-active-fill)", color: "var(--dsw-alias-label-caption)", fontVariantNumeric: "tabular-nums" } },
+                    `${t("totalCost")} ${fmtUsd(costs.totalUsd, 4)}`
                   )
                 : null,
             ]
@@ -558,7 +751,8 @@ window.__ModuleLoader__.load({
                       )
                     )
                   : null,
-                data.note ? h("div", { key: "note", style: STYLES.note }, `${t("note")}: ${data.note}`) : null
+                data.note ? h("div", { key: "note", style: STYLES.note }, `${t("note")}: ${data.note}`) : null,
+                h("div", { key: "costSection", style: STYLES.costSection }, renderCostSection())
               ]
       );
 
@@ -609,6 +803,10 @@ window.__ModuleLoader__.load({
         "deepseek-pricing-ui: dictionaries"
       );
       const t = ctx.locale.bind(NS);
+      const injectProps = () => ({
+        getSessionId: () => ctx.sessions.list.getSnapshot().current ?? null,
+        subscribeSessions: (fn) => ctx.sessions.list.subscribe(fn),
+      });
       ctx.slots.inject(
         "sidebar.footer.action",
         () =>
@@ -618,7 +816,7 @@ window.__ModuleLoader__.load({
               id: "deepseek-pricing-panel",
               locale: NS,
               label: () => t("label"),
-              inject: () => ({}),
+              inject: injectProps,
             },
             PricingPanel
           ),
