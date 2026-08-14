@@ -64,6 +64,7 @@ window.__ModuleLoader__.load({
       turnsCount: "共 {n} 轮",
       turnRow: "轮 · {time} · {model}",
       costLoading: "计算中…",
+      cnyRateNote: "人民币按参考汇率 {r} 换算",
     };
 
     const en = {
@@ -109,6 +110,7 @@ window.__ModuleLoader__.load({
       turnsCount: "{n} turns",
       turnRow: "turn · {time} · {model}",
       costLoading: "Computing…",
+      cnyRateNote: "CNY at reference rate {r}",
     };
 
     // ---------------------------------------------------------------------
@@ -349,7 +351,8 @@ window.__ModuleLoader__.load({
         minWidth: 0,
       },
       turnRowHead: { color: "var(--dsw-alias-label-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-      turnRowMeta: { flex: "none", color: "var(--dsw-alias-label-tertiary)", fontVariantNumeric: "tabular-nums" },
+      turnRowMeta: { color: "var(--dsw-alias-label-tertiary)", fontSize: "11px", lineHeight: "16px", fontVariantNumeric: "tabular-nums", flex: "none" },
+      tdCny: { color: "var(--dsw-alias-label-tertiary)", fontSize: "10px", lineHeight: "14px", fontVariantNumeric: "tabular-nums" },
     };
 
     const TIER_COLORS = {
@@ -396,6 +399,7 @@ window.__ModuleLoader__.load({
     const usd = (n) => `$${n.toFixed(6)}`;
     const cny = (n) => `¥${n.toFixed(4)}`;
     const fmtUsd = (n, digits = 6) => `$${Number(n).toFixed(digits)}`;
+    const cnyPerM = (cnyAmount) => `¥${Number(cnyAmount).toFixed(4)}`;
     const shortTime = (iso) => {
       if (!iso) return "—";
       const d = new Date(iso);
@@ -563,7 +567,7 @@ window.__ModuleLoader__.load({
                       h(
                         "span",
                         { style: STYLES.turnRowMeta },
-                        `${turn.tokens.input + turn.tokens.cacheRead}/${turn.tokens.output} tok · ${fmtUsd(turn.costUsd, 6)}`
+                        `${turn.tokens.input + turn.tokens.cacheRead}/${turn.tokens.output} tok · ${fmtUsd(turn.costUsd, 6)} ≈ ${cny(turn.costCny)}`
                       )
                     )
                   )
@@ -599,7 +603,7 @@ window.__ModuleLoader__.load({
                 ? h(
                     "span",
                     { key: "c", style: { ...STYLES.badgeTier, background: "var(--dsw-alias-button-ghost-active-fill)", color: "var(--dsw-alias-label-caption)", fontVariantNumeric: "tabular-nums" } },
-                    `${t("totalCost")} ${fmtUsd(costs.totalUsd, 4)}`
+                    `${t("totalCost")} ${fmtUsd(costs.totalUsd, 4)} ≈ ${cny(costs.totalCny)}`
                   )
                 : null,
             ]
@@ -628,7 +632,7 @@ window.__ModuleLoader__.load({
                     data.fetchedAt ? `${t("synced")}: ${data.fetchedAt}` : null,
                   ].filter(Boolean)
                 ),
-                h("div", { key: "prices", style: STYLES.groupLabel }, t("prices")),
+                h("div", { key: "prices", style: STYLES.groupLabel }, `${t("prices")} · ${t("cnyRateNote").replace("{r}", String(data.cnyRate))}`),
                 h(
                   "table",
                   { key: "table", style: STYLES.table },
@@ -670,9 +674,15 @@ window.__ModuleLoader__.load({
                             p.tierLabel
                           )
                         ),
-                        h("td", { style: { ...STYLES.td, textAlign: "right" } }, usd(p.cacheHit)),
-                        h("td", { style: { ...STYLES.td, textAlign: "right" } }, usd(p.cacheMiss)),
-                        h("td", { style: { ...STYLES.td, textAlign: "right" } }, usd(p.output))
+                        h("td", { style: { ...STYLES.td, textAlign: "right" } },
+                          h("div", null, usd(p.cacheHit)),
+                          h("div", { style: STYLES.tdCny }, cnyPerM(p.cacheHit * data.cnyRate))),
+                        h("td", { style: { ...STYLES.td, textAlign: "right" } },
+                          h("div", null, usd(p.cacheMiss)),
+                          h("div", { style: STYLES.tdCny }, cnyPerM(p.cacheMiss * data.cnyRate))),
+                        h("td", { style: { ...STYLES.td, textAlign: "right" } },
+                          h("div", null, usd(p.output)),
+                          h("div", { style: STYLES.tdCny }, cnyPerM(p.output * data.cnyRate)))
                       );
                     })
                   )
