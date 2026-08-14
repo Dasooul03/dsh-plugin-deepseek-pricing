@@ -141,10 +141,13 @@ window.__ModuleLoader__.load({
       badgeRow: { display: "flex", alignItems: "baseline", gap: "6px", width: "100%", minWidth: 0 },
       badgeRowLabel: {
         flex: "none",
+        width: "64px",
         color: "var(--dsw-alias-label-tertiary)",
         fontSize: "11px",
         lineHeight: "18px",
         whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
       },
       badgeRowValue: {
         color: "var(--dsw-alias-label-primary)",
@@ -603,17 +606,17 @@ window.__ModuleLoader__.load({
             ? [
                 h(
                   "div",
-                  { key: "total", style: STYLES.badgeRow },
-                  h("span", { style: STYLES.badgeRowLabel }, t("totalCost")),
-                  h("span", { style: STYLES.badgeRowValue }, cny(costs.totalCny)),
-                  h("span", { style: STYLES.badgeRowUsd }, `≈ ${fmtUsd(costs.totalUsd, 4)}`)
-                ),
-                h(
-                  "div",
                   { key: "turn", style: STYLES.badgeRow },
                   h("span", { style: STYLES.badgeRowLabel }, t("turnCost")),
                   h("span", { style: STYLES.badgeRowValue }, cny(costs.currentTurnCny)),
                   h("span", { style: STYLES.badgeRowUsd }, `≈ ${fmtUsd(costs.currentTurnUsd, 4)}`)
+                ),
+                h(
+                  "div",
+                  { key: "total", style: STYLES.badgeRow },
+                  h("span", { style: STYLES.badgeRowLabel }, t("totalCost")),
+                  h("span", { style: STYLES.badgeRowValue }, cny(costs.totalCny)),
+                  h("span", { style: STYLES.badgeRowUsd }, `≈ ${fmtUsd(costs.totalUsd, 4)}`)
                 ),
               ]
             : [h("span", { key: "l", style: STYLES.badgeLabel }, t("label"))]
