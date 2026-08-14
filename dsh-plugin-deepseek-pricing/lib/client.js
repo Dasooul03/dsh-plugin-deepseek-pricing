@@ -127,6 +127,7 @@ window.__ModuleLoader__.load({
         border: "none",
         borderRadius: "12px",
         alignItems: "center",
+        justifyContent: "space-between",
         gap: "8px",
         padding: "0 8px 0 10px",
         fontFamily: "inherit",
