@@ -136,22 +136,16 @@ window.__ModuleLoader__.load({
       },
       badgeActive: { background: "var(--dsw-alias-interactive-bg-hover)" },
       badgeLabel: { textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, overflow: "hidden" },
-      badgeDot: {
+      badgeCost: {
         flex: "none",
-        width: "8px",
-        height: "8px",
-        borderRadius: "999px",
-        background: "var(--dsw-alias-label-tertiary)",
-      },
-      badgeTier: {
-        marginLeft: "auto",
-        flex: "none",
-        fontSize: "11px",
+        fontSize: "12px",
         lineHeight: "18px",
-        padding: "0 6px",
+        padding: "0 8px",
         borderRadius: "999px",
         background: "var(--dsw-alias-button-ghost-active-fill)",
         color: "var(--dsw-alias-label-caption)",
+        fontVariantNumeric: "tabular-nums",
+        whiteSpace: "nowrap",
       },
       railBadge: {
         width: "36px",
@@ -590,17 +584,20 @@ window.__ModuleLoader__.load({
           title: t("label"),
         },
         wide
-          ? [
-              h("span", { key: "d", style: { ...STYLES.badgeDot, background: colors.fg } }),
-              h("span", { key: "l", style: STYLES.badgeLabel }, t("label")),
-              costs
-                ? h(
-                    "span",
-                    { key: "c", style: { ...STYLES.badgeTier, background: "var(--dsw-alias-button-ghost-active-fill)", color: "var(--dsw-alias-label-caption)", fontVariantNumeric: "tabular-nums" } },
-                    `${t("totalCost")} ${cny(costs.totalCny)} ≈ ${fmtUsd(costs.totalUsd, 4)}`
-                  )
-                : null,
-            ]
+          ? costs
+            ? [
+                h(
+                  "span",
+                  { key: "total", style: STYLES.badgeCost },
+                  `${t("totalCost")} ${cny(costs.totalCny)}`
+                ),
+                h(
+                  "span",
+                  { key: "turn", style: STYLES.badgeCost },
+                  `${t("turnCost")} ${cny(costs.currentTurnCny)}`
+                ),
+              ]
+            : [h("span", { key: "l", style: STYLES.badgeLabel }, t("label"))]
           : [h("span", { key: "l", style: STYLES.badgeLabel }, "价")]
       );
 
