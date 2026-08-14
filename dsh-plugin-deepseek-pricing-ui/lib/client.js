@@ -593,13 +593,6 @@ window.__ModuleLoader__.load({
           ? [
               h("span", { key: "d", style: { ...STYLES.badgeDot, background: colors.fg } }),
               h("span", { key: "l", style: STYLES.badgeLabel }, t("label")),
-              data
-                ? h(
-                    "span",
-                    { key: "s", style: { ...STYLES.badgeTier, background: colors.bg, color: colors.fg } },
-                    tierLabel(t, data.applicableTier)
-                  )
-                : null,
               costs
                 ? h(
                     "span",
