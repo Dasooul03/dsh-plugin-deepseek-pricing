@@ -324,7 +324,7 @@ window.__ModuleLoader__.load({
       costLabel: { color: "var(--dsw-alias-label-tertiary)", fontSize: "11px", lineHeight: "16px" },
       costValue: {
         color: "var(--dsw-alias-label-primary)",
-        fontSize: "15px",
+        fontSize: "16px",
         fontWeight: 600,
         lineHeight: "24px",
         fontVariantNumeric: "tabular-nums",
@@ -332,7 +332,7 @@ window.__ModuleLoader__.load({
         overflow: "hidden",
         textOverflow: "ellipsis",
       },
-      costCny: { color: "var(--dsw-alias-label-tertiary)", fontWeight: 400, fontSize: "12px", marginLeft: "4px" },
+      costUsdSub: { color: "var(--dsw-alias-label-tertiary)", fontWeight: 400, fontSize: "12px", marginLeft: "4px" },
       costEmpty: { color: "var(--dsw-alias-label-tertiary)", fontSize: "12px", lineHeight: "20px", margin: "6px 0" },
       costError: { color: "var(--dsw-alias-state-error-primary)", fontSize: "12px", lineHeight: "18px", margin: "6px 0" },
       turnsCount: { color: "var(--dsw-alias-label-tertiary)", fontWeight: 400, textTransform: "none", letterSpacing: 0 },
@@ -499,7 +499,7 @@ window.__ModuleLoader__.load({
         [data, model, inputRaw, hitRaw, outputRaw]
       );
 
-      // 会话费用区块：本轮 + 会话总花费 + 逐轮明细（每轮按实际发生时刻计价）
+      // 会话费用区块（置顶）：本轮 + 会话总花费 + 逐轮明细（每轮按实际发生时刻计价）
       const renderCostSection = () => {
         if (costError) {
           return h("div", { style: STYLES.costError }, `${t("sessionCost")}: ${costError}`);
@@ -516,6 +516,7 @@ window.__ModuleLoader__.load({
         return h(
           React.Fragment,
           null,
+          h("div", { style: STYLES.groupLabel }, t("sessionCost")),
           h(
             "div",
             { style: STYLES.costSummary },
@@ -526,8 +527,8 @@ window.__ModuleLoader__.load({
               h(
                 "div",
                 { style: STYLES.costValue },
-                fmtUsd(costs.currentTurnUsd, 6),
-                h("span", { style: STYLES.costCny }, `≈ ${cny(costs.currentTurnCny)}`)
+                cny(costs.currentTurnCny),
+                h("span", { style: STYLES.costUsdSub }, `≈ ${fmtUsd(costs.currentTurnUsd, 6)}`)
               )
             ),
             h(
@@ -537,8 +538,8 @@ window.__ModuleLoader__.load({
               h(
                 "div",
                 { style: STYLES.costValue },
-                fmtUsd(costs.totalUsd, 6),
-                h("span", { style: STYLES.costCny }, `≈ ${cny(costs.totalCny)}`)
+                cny(costs.totalCny),
+                h("span", { style: STYLES.costUsdSub }, `≈ ${fmtUsd(costs.totalUsd, 6)}`)
               )
             )
           ),
@@ -567,7 +568,7 @@ window.__ModuleLoader__.load({
                       h(
                         "span",
                         { style: STYLES.turnRowMeta },
-                        `${turn.tokens.input + turn.tokens.cacheRead}/${turn.tokens.output} tok · ${fmtUsd(turn.costUsd, 6)} ≈ ${cny(turn.costCny)}`
+                        `${turn.tokens.input + turn.tokens.cacheRead}/${turn.tokens.output} tok · ${cny(turn.costCny)}（≈ ${fmtUsd(turn.costUsd, 6)}）`
                       )
                     )
                   )
@@ -603,7 +604,7 @@ window.__ModuleLoader__.load({
                 ? h(
                     "span",
                     { key: "c", style: { ...STYLES.badgeTier, background: "var(--dsw-alias-button-ghost-active-fill)", color: "var(--dsw-alias-label-caption)", fontVariantNumeric: "tabular-nums" } },
-                    `${t("totalCost")} ${fmtUsd(costs.totalUsd, 4)} ≈ ${cny(costs.totalCny)}`
+                    `${t("totalCost")} ${cny(costs.totalCny)} ≈ ${fmtUsd(costs.totalUsd, 4)}`
                   )
                 : null,
             ]
@@ -632,6 +633,8 @@ window.__ModuleLoader__.load({
                     data.fetchedAt ? `${t("synced")}: ${data.fetchedAt}` : null,
                   ].filter(Boolean)
                 ),
+                // 会话费用（本轮 + 总花费 + 逐轮明细）置顶显示
+                h("div", { key: "costSection", style: STYLES.costSection }, renderCostSection()),
                 h("div", { key: "prices", style: STYLES.groupLabel }, `${t("prices")} · ${t("cnyRateNote").replace("{r}", String(data.cnyRate))}`),
                 h(
                   "table",
@@ -752,17 +755,16 @@ window.__ModuleLoader__.load({
                       h(
                         "div",
                         { style: STYLES.resultTotal },
-                        `${t("total")}: ${usd(estimate.totalUsd)}  ${t("cny")} ${cny(estimate.totalCny)}`
+                        `${t("total")}: ${cny(estimate.totalCny)}（≈ ${usd(estimate.totalUsd)}）`
                       ),
                       h(
                         "div",
                         null,
-                        `${t("details")}: ${t("hit")} ${usd(estimate.hitCost)} · ${t("miss")} ${usd(estimate.missCost)} · ${t("output")} ${usd(estimate.outCost)}（${tierLabel(t, estimate.tier)}）`
+                        `${t("details")}: ${t("hit")} ¥${(estimate.hitCost * (data?.cnyRate ?? 7.2)).toFixed(4)} · ${t("miss")} ¥${(estimate.missCost * (data?.cnyRate ?? 7.2)).toFixed(4)} · ${t("output")} ¥${(estimate.outCost * (data?.cnyRate ?? 7.2)).toFixed(4)}（${tierLabel(t, estimate.tier)}）`
                       )
                     )
                   : null,
-                data.note ? h("div", { key: "note", style: STYLES.note }, `${t("note")}: ${data.note}`) : null,
-                h("div", { key: "costSection", style: STYLES.costSection }, renderCostSection())
+                data.note ? h("div", { key: "note", style: STYLES.note }, `${t("note")}: ${data.note}`) : null
               ]
       );
 
