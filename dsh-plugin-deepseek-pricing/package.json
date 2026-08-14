@@ -1,0 +1,36 @@
+{
+  "name": "dsh-plugin-deepseek-pricing",
+  "version": "0.1.0",
+  "description": "DeepSeek 官方模型实时定价查询与费用预估的 dsh 插件：峰谷计价按 UTC 时间自动切换，支持从官方定价页实时同步",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "keywords": [
+    "deepseek",
+    "dsh",
+    "plugin",
+    "pricing",
+    "价格",
+    "定价",
+    "峰谷"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/smoke.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  }
+}
