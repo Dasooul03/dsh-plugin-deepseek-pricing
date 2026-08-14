@@ -120,15 +120,17 @@ window.__ModuleLoader__.load({
       badge: {
         boxSizing: "border-box",
         width: "100%",
-        height: "49px",
+        minHeight: "49px",
         color: "var(--dsw-alias-label-primary)",
         cursor: "pointer",
         background: "transparent",
         border: "none",
         borderRadius: "12px",
-        alignItems: "center",
-        gap: "8px",
-        padding: "0 8px 0 10px",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        flexDirection: "column",
+        gap: "2px",
+        padding: "7px 10px",
         fontFamily: "inherit",
         fontSize: "14px",
         display: "inline-flex",
@@ -136,14 +138,26 @@ window.__ModuleLoader__.load({
       },
       badgeActive: { background: "var(--dsw-alias-interactive-bg-hover)" },
       badgeLabel: { textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, overflow: "hidden" },
-      badgeCost: {
+      badgeRow: { display: "flex", alignItems: "baseline", gap: "6px", width: "100%", minWidth: 0 },
+      badgeRowLabel: {
         flex: "none",
-        fontSize: "12px",
+        color: "var(--dsw-alias-label-tertiary)",
+        fontSize: "11px",
         lineHeight: "18px",
-        padding: "0 8px",
-        borderRadius: "999px",
-        background: "var(--dsw-alias-button-ghost-active-fill)",
-        color: "var(--dsw-alias-label-caption)",
+        whiteSpace: "nowrap",
+      },
+      badgeRowValue: {
+        color: "var(--dsw-alias-label-primary)",
+        fontSize: "13px",
+        fontWeight: 600,
+        lineHeight: "18px",
+        fontVariantNumeric: "tabular-nums",
+        whiteSpace: "nowrap",
+      },
+      badgeRowUsd: {
+        color: "var(--dsw-alias-label-tertiary)",
+        fontSize: "11px",
+        lineHeight: "18px",
         fontVariantNumeric: "tabular-nums",
         whiteSpace: "nowrap",
       },
@@ -151,6 +165,7 @@ window.__ModuleLoader__.load({
         width: "36px",
         height: "36px",
         borderRadius: "50%",
+        alignItems: "center",
         justifyContent: "center",
         gap: 0,
         padding: 0,
@@ -587,14 +602,18 @@ window.__ModuleLoader__.load({
           ? costs
             ? [
                 h(
-                  "span",
-                  { key: "total", style: STYLES.badgeCost },
-                  `${t("totalCost")} ${cny(costs.totalCny)}`
+                  "div",
+                  { key: "total", style: STYLES.badgeRow },
+                  h("span", { style: STYLES.badgeRowLabel }, t("totalCost")),
+                  h("span", { style: STYLES.badgeRowValue }, cny(costs.totalCny)),
+                  h("span", { style: STYLES.badgeRowUsd }, `≈ ${fmtUsd(costs.totalUsd, 4)}`)
                 ),
                 h(
-                  "span",
-                  { key: "turn", style: STYLES.badgeCost },
-                  `${t("turnCost")} ${cny(costs.currentTurnCny)}`
+                  "div",
+                  { key: "turn", style: STYLES.badgeRow },
+                  h("span", { style: STYLES.badgeRowLabel }, t("turnCost")),
+                  h("span", { style: STYLES.badgeRowValue }, cny(costs.currentTurnCny)),
+                  h("span", { style: STYLES.badgeRowUsd }, `≈ ${fmtUsd(costs.currentTurnUsd, 4)}`)
                 ),
               ]
             : [h("span", { key: "l", style: STYLES.badgeLabel }, t("label"))]
