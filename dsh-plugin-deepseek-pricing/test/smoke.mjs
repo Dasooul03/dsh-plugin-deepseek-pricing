@@ -127,6 +127,60 @@ ok("解析官方定价页 HTML", () => {
   assert.deepEqual(po.prices["deepseek-v4-pro"].peak, { cacheHit: 0.044, cacheMiss: 1.32, output: 3.96 });
 });
 
+ok("解析峰谷主表结构（官方新页面：无过渡期）", () => {
+  const html = [
+    "<html><body><table>",
+    "<tr><td>MODEL</td><td>deepseek-v4-flash</td><td>deepseek-v4-pro</td></tr>",
+    "<tr><td rowspan=\"6\">PRICING<sup>(1)</sup></td><td rowspan=\"2\">1M INPUT TOKENS (CACHE HIT)</td><td>OFF-PEAK</td><td>$0.007</td><td>$0.022</td></tr>",
+    "<tr><td>PEAK</td><td>$0.014</td><td>$0.044</td></tr>",
+    "<tr><td rowspan=\"2\">1M INPUT TOKENS (CACHE MISS)</td><td>OFF-PEAK</td><td>$0.22</td><td>$0.66</td></tr>",
+    "<tr><td>PEAK</td><td>$0.44</td><td>$1.32</td></tr>",
+    "<tr><td rowspan=\"2\">1M OUTPUT TOKENS</td><td>OFF-PEAK</td><td>$0.66</td><td>$1.98</td></tr>",
+    "<tr><td>PEAK</td><td>$1.32</td><td>$3.96</td></tr>",
+    "</table>",
+    "<p>(1) Off-peak rates are half of the peak rates. Peak hours are 01:00 - 04:00 and 06:00 - 10:00 UTC (all other hours are off-peak).</p>",
+    "</body></html>",
+  ].join("");
+  const doc = parsePricingHtml(html);
+  // 峰谷主表 + 内置历史统一价衔接（过渡前轮次按统一价计费）
+  assert.equal(doc.periods.length, 2);
+  assert.equal(doc.periods[0].mode, "flat");
+  assert.equal(doc.periods[0].to, "2026-08-16T16:00:00.000Z");
+  assert.equal(doc.periods[1].mode, "peak-off-peak");
+  assert.equal(doc.periods[1].from, "2026-08-16T16:00:00.000Z");
+  assert.equal(doc.periods[1].to, null);
+  assert.equal(doc.effectiveDate, "2026-08-16T16:00:00.000Z");
+  assert.deepEqual(doc.peakHoursUtc, [[1, 4], [6, 10]]);
+  const flash = doc.periods[1].prices["deepseek-v4-flash"];
+  assert.deepEqual(flash.offPeak, { cacheHit: 0.007, cacheMiss: 0.22, output: 0.66 });
+  assert.deepEqual(flash.peak, { cacheHit: 0.014, cacheMiss: 0.44, output: 1.32 });
+  assert.deepEqual(doc.periods[1].prices["deepseek-v4-pro"].peak, { cacheHit: 0.044, cacheMiss: 1.32, output: 3.96 });
+  // 过渡前（08-14）→ 统一价；峰谷生效后按时间走档位
+  const p = pricesFor(doc, "deepseek-v4-flash", new Date("2026-08-14T08:00:00Z"));
+  assert.equal(p.tier, "flat");
+  assert.equal(p.cacheMiss, 0.14);
+  const p2 = pricesFor(doc, "deepseek-v4-flash", new Date("2026-08-17T03:00:00Z"));
+  assert.equal(p2.tier, "peak");
+  const p3 = pricesFor(doc, "deepseek-v4-flash", new Date("2026-08-17T12:00:00Z"));
+  assert.equal(p3.tier, "off-peak");
+});
+
+// 真实抓取的官方新页面（可选，存在 DS_PRICING_HTML_NOW 时执行）
+ok("解析真实官方新页面（峰谷主表）", () => {
+  const htmlPath = process.env.DS_PRICING_HTML_NOW;
+  if (!htmlPath) {
+    console.log("    跳过（未提供 DS_PRICING_HTML_NOW）");
+    return;
+  }
+  const doc = parsePricingHtml(readFileSync(htmlPath, "utf8"));
+  assert.equal(doc.periods.length, 2);
+  assert.equal(doc.periods[0].mode, "flat");
+  assert.equal(doc.periods[1].mode, "peak-off-peak");
+  const flash = doc.periods[1].prices["deepseek-v4-flash"];
+  assert.deepEqual(flash.offPeak, { cacheHit: 0.007, cacheMiss: 0.22, output: 0.66 });
+  assert.deepEqual(flash.peak, { cacheHit: 0.014, cacheMiss: 0.44, output: 1.32 });
+});
+
 ok("空页面解析报错", () => {
   assert.throws(() => parsePricingHtml(""), /empty/);
   assert.throws(() => parsePricingHtml("<html><body>no tables</body></html>"), /MODEL header row/);

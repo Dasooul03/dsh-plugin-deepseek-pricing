@@ -204,115 +204,167 @@ export function parsePricingHtml(html) {
   const models = header.slice(1).filter((c) => c.length > 0 && c !== "MODEL");
   if (models.length === 0) throw new Error("pricing page: no model ids found");
 
-  // 2) 主表价格：行内任意单元格为指标名（兼容 rowspan 布局），其后价格列数 = 模型数
-  const metricIndex = new Map(); // metric -> 模型价格数组
+  // 2) 主表价格解析：兼容两种官方结构
+  //    旧（统一价阶段）：[指标, $a, $b]
+  //    新（峰谷阶段）  ：[指标, OFF-PEAK, $a, $b] + 延续行 [PEAK, $a, $b]（rowspan）
   const MONEY_RE = /^\$[\d,]+(?:\.\d+)?$/;
+  const METRICS = ["1M INPUT TOKENS (CACHE HIT)", "1M INPUT TOKENS (CACHE MISS)", "1M OUTPUT TOKENS"];
+  const parseMoney = (c) => {
+    const n = Number.parseFloat(c.replace(/[$,\s]/g, ""));
+    if (!Number.isFinite(n) || n < 0) throw new Error(`pricing page: bad price cell ${JSON.stringify(c)}`);
+    return n;
+  };
+  const flat = {}; // metric -> 模型价格数组
+  const tiers = {}; // metric -> { offPeak: 数组, peak: 数组 }
+  const tierKey = (v) => (v === "PEAK" ? "peak" : "offPeak");
+  let lastMetric = null;
   for (const r of rows) {
     const idx = r.findIndex((c) => METRIC_RE.test(c));
-    if (idx === -1) continue;
-    const prices = r.slice(idx + 1);
-    if (prices.length !== models.length) continue;
-    if (!prices.every((c) => MONEY_RE.test(c))) continue;
-    metricIndex.set(
-      r[idx],
-      prices.map((c) => {
-        const n = Number.parseFloat(c.replace(/[$,\s]/g, ""));
-        if (!Number.isFinite(n) || n < 0) throw new Error(`pricing page: bad price cell ${JSON.stringify(c)}`);
-        return n;
-      })
-    );
+    if (idx !== -1) {
+      lastMetric = r[idx];
+      const rest = r.slice(idx + 1);
+      if (rest.length === models.length && rest.every((c) => MONEY_RE.test(c))) {
+        flat[lastMetric] = rest.map(parseMoney);
+      } else if (
+        rest.length === models.length + 1 &&
+        (rest[0] === "OFF-PEAK" || rest[0] === "PEAK") &&
+        rest.slice(1).every((c) => MONEY_RE.test(c))
+      ) {
+        (tiers[lastMetric] ??= {})[tierKey(rest[0])] = rest.slice(1).map(parseMoney);
+      }
+    } else if (
+      lastMetric !== null &&
+      r.length === models.length + 1 &&
+      (r[0] === "OFF-PEAK" || r[0] === "PEAK") &&
+      r.slice(1).every((c) => MONEY_RE.test(c))
+    ) {
+      (tiers[lastMetric] ??= {})[tierKey(r[0])] = r.slice(1).map(parseMoney);
+    }
   }
-  const cacheHit = metricIndex.get("1M INPUT TOKENS (CACHE HIT)");
-  const cacheMiss = metricIndex.get("1M INPUT TOKENS (CACHE MISS)");
-  const output = metricIndex.get("1M OUTPUT TOKENS");
-  if (!cacheHit || !cacheMiss || !output) {
+
+  // 3) 旧版脚注峰谷表兜底：行首为模型、第二列为 PEAK/OFF-PEAK 的行（含 rowspan 延续）。
+  //    该表以模型为中心（每行含该模型全部三项价格），需转换为指标为中心的 tiers。
+  if (Object.keys(tiers).length === 0) {
+    const peakTable = new Map(); // model -> { offPeak: {cacheHit,cacheMiss,output}, peak: {...} }
+    let lastModel = null;
+    const readPrices = (cells) => {
+      const p = cells.map((c) => Number.parseFloat(c.replace(/[$,\s]/g, "")));
+      if (p.length !== 3 || p.some((n) => !Number.isFinite(n) || n < 0)) return null;
+      return { cacheHit: p[0], cacheMiss: p[1], output: p[2] };
+    };
+    for (const r of rows) {
+      let model = null;
+      let tier = null;
+      let priceCells = null;
+      if (models.includes(r[0]) && (r[1] === "PEAK" || r[1] === "OFF-PEAK") && r.length === 5) {
+        model = r[0];
+        tier = r[1];
+        priceCells = r.slice(2);
+      } else if ((r[0] === "PEAK" || r[0] === "OFF-PEAK") && r.length === 4 && lastModel !== null) {
+        model = lastModel;
+        tier = r[0];
+        priceCells = r.slice(1);
+      } else {
+        if (models.includes(r[0])) lastModel = r[0];
+        continue;
+      }
+      const p = readPrices(priceCells);
+      if (p === null) continue;
+      const entry = peakTable.get(model) ?? { offPeak: null, peak: null };
+      entry[tier === "PEAK" ? "peak" : "offPeak"] = p;
+      peakTable.set(model, entry);
+      lastModel = model;
+    }
+    // 模型中心 → 指标中心（数组按下标对齐 models 顺序）
+    const METRIC_KEYS = ["cacheHit", "cacheMiss", "output"];
+    for (let i = 0; i < models.length; i++) {
+      const entry = peakTable.get(models[i]);
+      if (entry === void 0 || entry.offPeak === null || entry.peak === null) continue;
+      for (let k = 0; k < METRICS.length; k++) {
+        (tiers[METRICS[k]] ??= {}).offPeak ??= [];
+        (tiers[METRICS[k]] ??= {}).peak ??= [];
+        tiers[METRICS[k]].offPeak[i] = entry.offPeak[METRIC_KEYS[k]];
+        tiers[METRICS[k]].peak[i] = entry.peak[METRIC_KEYS[k]];
+      }
+    }
+  }
+
+  const flatHit = flat["1M INPUT TOKENS (CACHE HIT)"];
+  const flatMiss = flat["1M INPUT TOKENS (CACHE MISS)"];
+  const flatOut = flat["1M OUTPUT TOKENS"];
+  const hasFlat = !!(flatHit && flatMiss && flatOut);
+  const hasTiers = METRICS.every((m) => tiers[m]?.offPeak && tiers[m]?.peak);
+  if (!hasFlat && !hasTiers) {
     throw new Error("pricing page: incomplete main pricing table");
   }
 
-  // 3) 脚注：高峰时段 + 生效时间
+  // 4) 脚注：高峰时段（生效时间仅在过渡阶段页面存在，可选）
   const footnote = textOf(html);
   const peakMatch = /Peak hours are (\d{2}):00 - (\d{2}):00 and (\d{2}):00 - (\d{2}):00 UTC/.exec(footnote);
   const effectMatch = /take effect at (\d{2}):00 UTC on ([A-Za-z]+) (\d{1,2}), (\d{4})/.exec(footnote);
   let peakHoursUtc = null;
   let effectiveDate = null;
-  if (peakMatch && effectMatch) {
+  if (peakMatch) {
     const [h1, h2, h3, h4] = [peakMatch[1], peakMatch[2], peakMatch[3], peakMatch[4]].map(Number);
     if (h1 < h2 && h3 < h4 && h2 <= 24 && h4 <= 24) {
       peakHoursUtc = [[h1, h2], [h3, h4]];
-      const month = MONTHS[effectMatch[2].toLowerCase()];
-      if (month !== undefined) {
-        const hour = Number(effectMatch[1]);
-        const day = Number(effectMatch[3]);
-        const year = Number(effectMatch[4]);
-        effectiveDate = new Date(Date.UTC(year, month, day, hour)).toISOString();
-      }
     }
   }
-
-  // 4) 峰谷表：行首为模型、第二列为 PEAK/OFF-PEAK 的行（模型列 rowspan 延续时，
-  //    第二行以 PEAK/OFF-PEAK 开头，模型取上一行）
-  const peakTable = new Map(); // model -> { offPeak, peak }
-  let lastModel = null;
-  const readPrices = (cells) => {
-    const p = cells.map((c) => Number.parseFloat(c.replace(/[$,\s]/g, "")));
-    if (p.length !== 3 || p.some((n) => !Number.isFinite(n) || n < 0)) return null;
-    return { cacheHit: p[0], cacheMiss: p[1], output: p[2] };
-  };
-  for (const r of rows) {
-    let model = null;
-    let tier = null;
-    let priceCells = null;
-    if (models.includes(r[0]) && (r[1] === "PEAK" || r[1] === "OFF-PEAK") && r.length === 5) {
-      model = r[0];
-      tier = r[1];
-      priceCells = r.slice(2);
-    } else if ((r[0] === "PEAK" || r[0] === "OFF-PEAK") && r.length === 4 && lastModel !== null) {
-      model = lastModel;
-      tier = r[0];
-      priceCells = r.slice(1);
-    } else {
-      if (models.includes(r[0])) lastModel = r[0];
-      continue;
+  if (effectMatch) {
+    const month = MONTHS[effectMatch[2].toLowerCase()];
+    if (month !== undefined) {
+      effectiveDate = new Date(
+        Date.UTC(Number(effectMatch[4]), month, Number(effectMatch[3]), Number(effectMatch[1]))
+      ).toISOString();
     }
-    const p = readPrices(priceCells);
-    if (p === null) continue;
-    const entry = peakTable.get(model) ?? { offPeak: null, peak: null };
-    entry[tier === "PEAK" ? "peak" : "offPeak"] = p;
-    peakTable.set(model, entry);
-    lastModel = model;
   }
 
   // 5) 组装定价文档
-  const flatPrices = {};
-  for (let i = 0; i < models.length; i++) {
-    flatPrices[models[i]] = { cacheHit: cacheHit[i], cacheMiss: cacheMiss[i], output: output[i] };
-  }
-  const periods = [
-    {
+  const periods = [];
+  if (hasFlat) {
+    const flatPrices = {};
+    for (let i = 0; i < models.length; i++) {
+      flatPrices[models[i]] = { cacheHit: flatHit[i], cacheMiss: flatMiss[i], output: flatOut[i] };
+    }
+    periods.push({
       id: "flat",
       label: "统一计费（峰谷计价生效前）",
       from: null,
-      to: effectiveDate,
+      to: hasTiers ? effectiveDate : null,
       mode: "flat",
       prices: flatPrices,
-    },
-  ];
-  if (effectiveDate && peakHoursUtc && peakTable.size > 0) {
+    });
+  }
+  if (hasTiers) {
     const peakOffPeakPrices = {};
-    for (const [model, entry] of peakTable) {
-      if (entry.offPeak && entry.peak) {
-        peakOffPeakPrices[model] = { offPeak: entry.offPeak, peak: entry.peak };
-      }
+    for (let i = 0; i < models.length; i++) {
+      const model = models[i];
+      peakOffPeakPrices[model] = {
+        offPeak: { cacheHit: tiers[METRICS[0]].offPeak[i], cacheMiss: tiers[METRICS[1]].offPeak[i], output: tiers[METRICS[2]].offPeak[i] },
+        peak: { cacheHit: tiers[METRICS[0]].peak[i], cacheMiss: tiers[METRICS[1]].peak[i], output: tiers[METRICS[2]].peak[i] },
+      };
     }
-    if (Object.keys(peakOffPeakPrices).length > 0) {
-      periods.push({
-        id: "peak-off-peak",
-        label: "峰谷计价",
-        from: effectiveDate,
-        to: null,
-        mode: "peak-off-peak",
-        prices: peakOffPeakPrices,
-      });
+    periods.push({
+      id: "peak-off-peak",
+      label: "峰谷计价",
+      from: hasFlat ? effectiveDate : null,
+      to: null,
+      mode: "peak-off-peak",
+      prices: peakOffPeakPrices,
+    });
+  }
+  // 6) 历史统一价衔接：峰谷计价生效后的官方页面不再包含过渡期信息，
+  //    此时把内置默认表中记录的历史统一价周期（截止官方过渡时间）合并进来，
+  //    保证过渡前发生的会话轮次仍按当时的统一价正确计费。
+  const mergedPeriods = [...periods];
+  if (!mergedPeriods.some((p) => p.mode === "flat")) {
+    const historicalFlat = DEFAULT_PRICING.periods.find((p) => p.mode === "flat" && p.to !== null);
+    if (historicalFlat !== void 0) {
+      const effective = historicalFlat.to;
+      mergedPeriods.unshift({ ...historicalFlat });
+      const tiered = mergedPeriods.find((p) => p.mode === "peak-off-peak");
+      if (tiered !== void 0 && tiered.from === null) tiered.from = effective;
+      effectiveDate = effective;
     }
   }
   return {
@@ -321,7 +373,7 @@ export function parsePricingHtml(html) {
     effectiveDate,
     peakHoursUtc: peakHoursUtc ?? DEFAULT_PRICING.peakHoursUtc,
     offPeakRatio: 0.5,
-    periods,
+    periods: mergedPeriods,
   };
 }
 
